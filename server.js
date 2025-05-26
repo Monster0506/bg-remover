@@ -1,33 +1,15 @@
 const express = require("express");
 const multer = require("multer");
-const { removeBackground } = require("@imgly/background-removal-node");
-const fs = require("fs").promises;
-const path = require("path");
-const os = require("os");
-const crypto = require("crypto");
-const { pathToFileURL } = require("url");
+const axios = require("axios");
+const FormData = require("form-data");
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- Configuration for @imgly/background-removal-node ---
-// Let the library use its default mechanism to find models within its package.
-// We will specify the 'small' model to try and stay under Vercel size limits.
-const imglyModelToUse = "small";
+const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY;
+const REMOVE_BG_API_URL = "https://api.remove.bg/v1.0/removebg";
 
-const imglyConfig = {
-  // publicPath is intentionally omitted or set to undefined to use the library's default.
-  // The library should look for its model components (hashed files, resources.json)
-  // within its own 'dist' folder in node_modules.
-  model: imglyModelToUse,
-  progress: (key, current, total) => {
-    // The 'key' might include 'fetch' or 'compute' and the model name or resource path
-    console.log(`[imgly-progress] ${key}: ${current} / ${total}`);
-  },
-};
-// --- End Configuration ---
-
-// Configure Multer for file uploads
+// Configure Multer for file uploads (to get the image buffer)
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
@@ -51,7 +33,9 @@ const upload = multer({
 });
 
 app.get("/", (req, res) => {
-  res.send("Background Removal API. POST an image to /remove-background.");
+  res.send(
+    "Background Removal API (using Remove.bg). POST an image to /remove-background.",
+  );
 });
 
 app.post("/remove-background", upload.single("image"), async (req, res) => {
@@ -59,74 +43,84 @@ app.post("/remove-background", upload.single("image"), async (req, res) => {
     return res.status(400).json({ error: "No image file uploaded." });
   }
 
-  console.log(
-    `Processing image: ${req.file.originalname}, size: ${req.file.size} bytes`,
-  );
+  if (!REMOVE_BG_API_KEY) {
+    console.error("Remove.bg API Key is not configured.");
+    return res.status(500).json({
+      error: "API Key for background removal service is not configured.",
+    });
+  }
 
-  const tempDir = os.tmpdir(); // This is /tmp on Vercel and is writable
-  const uniqueSuffix = crypto.randomBytes(6).toString("hex");
-  const safeOriginalName = path.basename(req.file.originalname);
-  const tempInputFilename = `input-${uniqueSuffix}-${safeOriginalName}`;
-  const tempInputPath = path.join(tempDir, tempInputFilename);
+  console.log(`Processing image via Remove.bg: ${req.file.originalname}`);
+
+  const formData = new FormData();
+  formData.append("image_file", req.file.buffer, req.file.originalname);
+  formData.append("size", "auto"); // 'auto' for full res (uses 1 credit), 'preview' for free low-res
 
   try {
-    console.log(`Writing uploaded file to temporary path: ${tempInputPath}`);
-    await fs.writeFile(tempInputPath, req.file.buffer);
-    console.log(`Successfully wrote to ${tempInputPath}`);
+    const response = await axios({
+      method: "post",
+      url: REMOVE_BG_API_URL,
+      data: formData,
+      headers: {
+        ...formData.getHeaders(),
+        "X-Api-Key": REMOVE_BG_API_KEY,
+      },
+      responseType: "arraybuffer", // Crucial to get the image data as a buffer
+    });
 
-    const fileURLForInput = pathToFileURL(tempInputPath).href;
+    console.log("Successfully removed background using Remove.bg.");
 
-    console.log(
-      `Calling @imgly/background-removal-node with input: ${fileURLForInput}`,
-    );
-    console.log(
-      `Using @imgly config: model='${imglyConfig.model}' (default publicPath)`,
-    );
-
-    // Call removeBackground with the input file URL and the simplified config
-    const blob = await removeBackground(fileURLForInput, imglyConfig);
-
-    console.log(
-      `Background removal successful. Output blob type: ${blob.type}, size: ${blob.size}`,
-    );
-    const processedImageBuffer = Buffer.from(await blob.arrayBuffer());
-
-    res.setHeader("Content-Type", blob.type || "image/png");
+    res.setHeader("Content-Type", "image/png"); // Remove.bg always returns PNG
     res.setHeader(
       "Content-Disposition",
       'inline; filename="background-removed.png"',
     );
-    res.send(processedImageBuffer);
+    res.send(Buffer.from(response.data, "binary"));
   } catch (error) {
-    console.error("Error during background removal process:");
-    console.error("Error Name:", error.name);
-    console.error("Error Message:", error.message);
-    console.error("Error Stack:", error.stack);
-    if (error.cause) {
-      console.error("Error Cause:", error.cause);
-    }
-    res.status(500).json({
-      error: "Failed to remove background.",
-      details: error.message,
-      name: error.name,
-      cause: error.cause ? String(error.cause) : null,
-    });
-  } finally {
-    try {
-      if (await fs.stat(tempInputPath).catch(() => false)) {
-        console.log(`Deleting temporary file: ${tempInputPath}`);
-        await fs.unlink(tempInputPath);
-        console.log(`Successfully deleted ${tempInputPath}`);
+    console.error("Error calling Remove.bg API:");
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      // that falls out of the range of 2xx
+      console.error("Status:", error.response.status);
+      // Remove.bg often sends error details as JSON in the response data
+      // Try to parse it if it's an error response
+      let errorDetails = "Failed to process image with Remove.bg.";
+      try {
+        const errorResponseData = JSON.parse(
+          Buffer.from(error.response.data).toString(),
+        );
+        if (errorResponseData.errors && errorResponseData.errors.length > 0) {
+          errorDetails =
+            errorResponseData.errors[0].title ||
+            errorResponseData.errors[0].detail ||
+            errorDetails;
+        }
+        console.error("Data:", errorResponseData);
+      } catch (parseError) {
+        console.error(
+          "Data (raw):",
+          Buffer.from(error.response.data).toString(),
+        );
       }
-    } catch (cleanupError) {
-      console.error(
-        `Error deleting temporary file ${tempInputPath}:`,
-        cleanupError.message,
-      );
+      res.status(error.response.status || 500).json({
+        error: "Failed to remove background via external API.",
+        details: errorDetails,
+      });
+    } else if (error.request) {
+      // The request was made but no response was received
+      console.error("No response received:", error.request);
+      res.status(500).json({
+        error: "No response from background removal service.",
+      });
+    } else {
+      // Something happened in setting up the request that triggered an Error
+      console.error("Error setting up request:", error.message);
+      res.status(500).json({ error: "Error setting up API request." });
     }
   }
 });
 
+// Global error handler
 app.use((err, req, res, next) => {
   console.error("Global error handler caught an error:", err.message);
   if (err instanceof multer.MulterError) {
@@ -142,7 +136,9 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
-  console.log(
-    "INFO: @imgly/background-removal-node will attempt to use its default model loading.",
-  );
+  if (!REMOVE_BG_API_KEY) {
+    console.warn(
+      "WARNING: REMOVE_BG_API_KEY environment variable is not set. API calls will fail.",
+    );
+  }
 });
