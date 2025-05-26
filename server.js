@@ -11,24 +11,18 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // --- Configuration for @imgly/background-removal-node ---
-// Option 1: Bundled "small" model (to try and fit Vercel limits)
-// Ensure 'imgly-assets' directory in your project root contains ONLY the 'small' model files.
-const bundledAssetsPath = path.join(__dirname, "imgly-assets");
-const bundledAssetsURL = pathToFileURL(bundledAssetsPath).href + "/"; // Must end with a slash
-const imglyModelToUse = "small"; // Use the small model
-
-// Option 2: Externally Hosted Model (if bundled 'small' model is still too large or quality is insufficient)
-// const externalModelsBaseURL = "https://your-cdn-or-blob-storage.com/path/to/imgly-models/"; // Replace with your actual URL
-// const imglyModelToUse = "medium"; // Or 'small', depending on what you host
+// Let the library use its default mechanism to find models within its package.
+// We will specify the 'small' model to try and stay under Vercel size limits.
+const imglyModelToUse = "small";
 
 const imglyConfig = {
-  publicPath: bundledAssetsURL, // For Option 1
-  // publicPath: externalModelsBaseURL, // For Option 2 - UNCOMMENT THIS and COMMENT line above
+  // publicPath is intentionally omitted or set to undefined to use the library's default.
+  // The library should look for its model components (hashed files, resources.json)
+  // within its own 'dist' folder in node_modules.
   model: imglyModelToUse,
   progress: (key, current, total) => {
-    console.log(
-      `[imgly-progress] ${imglyModelToUse} ${key}: ${current} / ${total}`,
-    );
+    // The 'key' might include 'fetch' or 'compute' and the model name or resource path
+    console.log(`[imgly-progress] ${key}: ${current} / ${total}`);
   },
 };
 // --- End Configuration ---
@@ -85,11 +79,11 @@ app.post("/remove-background", upload.single("image"), async (req, res) => {
     console.log(
       `Calling @imgly/background-removal-node with input: ${fileURLForInput}`,
     );
-    console.log(`Using @imgly config:`, {
-      publicPath: imglyConfig.publicPath,
-      model: imglyConfig.model,
-    });
+    console.log(
+      `Using @imgly config: model='${imglyConfig.model}' (default publicPath)`,
+    );
 
+    // Call removeBackground with the input file URL and the simplified config
     const blob = await removeBackground(fileURLForInput, imglyConfig);
 
     console.log(
@@ -149,6 +143,6 @@ app.use((err, req, res, next) => {
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
   console.log(
-    "INFO: Model loading behavior depends on @imgly/background-removal-node config.",
+    "INFO: @imgly/background-removal-node will attempt to use its default model loading.",
   );
 });
