@@ -1,18 +1,40 @@
 const express = require("express");
 const multer = require("multer");
 const { removeBackground } = require("@imgly/background-removal-node");
-const fs = require("fs").promises; // Using promises API for async operations
+const fs = require("fs").promises;
 const path = require("path");
-const os = require("os"); // To get system's temporary directory
-const crypto = require("crypto"); // For unique temporary filenames
-
+const os = require("os");
+const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 
 const app = express();
 const port = process.env.PORT || 3000;
 
+// --- Configuration for @imgly/background-removal-node ---
+// Option 1: Bundled "small" model (to try and fit Vercel limits)
+// Ensure 'imgly-assets' directory in your project root contains ONLY the 'small' model files.
+const bundledAssetsPath = path.join(__dirname, "imgly-assets");
+const bundledAssetsURL = pathToFileURL(bundledAssetsPath).href + "/"; // Must end with a slash
+const imglyModelToUse = "small"; // Use the small model
+
+// Option 2: Externally Hosted Model (if bundled 'small' model is still too large or quality is insufficient)
+// const externalModelsBaseURL = "https://your-cdn-or-blob-storage.com/path/to/imgly-models/"; // Replace with your actual URL
+// const imglyModelToUse = "medium"; // Or 'small', depending on what you host
+
+const imglyConfig = {
+  publicPath: bundledAssetsURL, // For Option 1
+  // publicPath: externalModelsBaseURL, // For Option 2 - UNCOMMENT THIS and COMMENT line above
+  model: imglyModelToUse,
+  progress: (key, current, total) => {
+    console.log(
+      `[imgly-progress] ${imglyModelToUse} ${key}: ${current} / ${total}`,
+    );
+  },
+};
+// --- End Configuration ---
+
 // Configure Multer for file uploads
-const storage = multer.memoryStorage(); // Still easiest to get the buffer first
+const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB file size limit
@@ -47,35 +69,28 @@ app.post("/remove-background", upload.single("image"), async (req, res) => {
     `Processing image: ${req.file.originalname}, size: ${req.file.size} bytes`,
   );
 
-  // Define a temporary path for the input file
-  const tempDir = os.tmpdir();
+  const tempDir = os.tmpdir(); // This is /tmp on Vercel and is writable
   const uniqueSuffix = crypto.randomBytes(6).toString("hex");
-  // Sanitize originalname to prevent path traversal or invalid characters if used directly
   const safeOriginalName = path.basename(req.file.originalname);
   const tempInputFilename = `input-${uniqueSuffix}-${safeOriginalName}`;
   const tempInputPath = path.join(tempDir, tempInputFilename);
 
   try {
-    // 1. Write the uploaded buffer to the temporary file
     console.log(`Writing uploaded file to temporary path: ${tempInputPath}`);
     await fs.writeFile(tempInputPath, req.file.buffer);
     console.log(`Successfully wrote to ${tempInputPath}`);
 
-    // 2. Call removeBackground with the file PATH
+    const fileURLForInput = pathToFileURL(tempInputPath).href;
+
     console.log(
-      `Calling @imgly/background-removal-node with file path: ${tempInputPath}`,
+      `Calling @imgly/background-removal-node with input: ${fileURLForInput}`,
     );
-    const fileURL = pathToFileURL(tempInputPath).href; // .href gives the string representation
-    console.log(
-      `Calling @imgly/background-removal-node with file URL: ${fileURL}`,
-    );
-    const blob = await removeBackground(fileURL, {
-      // Pass file path
-      // You can add other configurations here if needed, e.g., model: 'small'
-      progress: (key, current, total) => {
-        console.log(`[imgly-progress] ${key}: ${current} / ${total}`);
-      },
+    console.log(`Using @imgly config:`, {
+      publicPath: imglyConfig.publicPath,
+      model: imglyConfig.model,
     });
+
+    const blob = await removeBackground(fileURLForInput, imglyConfig);
 
     console.log(
       `Background removal successful. Output blob type: ${blob.type}, size: ${blob.size}`,
@@ -103,9 +118,7 @@ app.post("/remove-background", upload.single("image"), async (req, res) => {
       cause: error.cause ? String(error.cause) : null,
     });
   } finally {
-    // 3. Clean up the temporary file in all cases (success or error)
     try {
-      // Check if file exists before attempting to unlink
       if (await fs.stat(tempInputPath).catch(() => false)) {
         console.log(`Deleting temporary file: ${tempInputPath}`);
         await fs.unlink(tempInputPath);
@@ -116,7 +129,6 @@ app.post("/remove-background", upload.single("image"), async (req, res) => {
         `Error deleting temporary file ${tempInputPath}:`,
         cleanupError.message,
       );
-      // Log cleanup error but don't let it overshadow the main processing error
     }
   }
 });
@@ -128,16 +140,15 @@ app.use((err, req, res, next) => {
   } else if (err) {
     return res.status(400).json({ error: `File upload error: ${err.message}` });
   }
-  // If it's an unhandled error not from multer or fileFilter
   if (!res.headersSent) {
     res.status(500).json({ error: "An unexpected server error occurred." });
   }
-  next(err); // Important for Express default error logging
+  next(err);
 });
 
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
   console.log(
-    "INFO: The first time you run background removal, it might download an AI model. Check console for progress.",
+    "INFO: Model loading behavior depends on @imgly/background-removal-node config.",
   );
 });
