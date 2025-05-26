@@ -13,6 +13,7 @@
   "dependencies": {
     "@imgly/background-removal-node": "^1.4.5",
     "axios": "^1.9.0",
+    "cors": "^2.8.5",
     "express": "^5.1.0",
     "form-data": "^4.0.2",
     "multer": "^2.0.0"

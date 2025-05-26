@@ -6,6 +6,7 @@ const FormData = require("form-data");
 const app = express();
 const port = process.env.PORT || 3000;
 
+const cors = require("cors"); // Import the cors middleware
 const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY;
 const REMOVE_BG_API_URL = "https://api.remove.bg/v1.0/removebg";
 
