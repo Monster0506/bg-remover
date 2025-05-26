@@ -50,11 +50,15 @@ app.post("/remove-background", upload.single("image"), async (req, res) => {
     });
   }
 
-  console.log(`Processing image via Remove.bg: ${req.file.originalname}`);
+  const requestedResolution =
+    req.query.resolution === "full" ? "auto" : "preview";
+  console.log(
+    `Processing image via Remove.bg: ${req.file.originalname}, resolution: ${requestedResolution}`,
+  );
 
   const formData = new FormData();
   formData.append("image_file", req.file.buffer, req.file.originalname);
-  formData.append("size", "auto"); // 'auto' for full res (uses 1 credit), 'preview' for free low-res
+  formData.append("size", requestedResolution); // Use determined resolution
 
   try {
     const response = await axios({
